@@ -46,7 +46,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests
     
-    - name: Download media JSON (if needed)
+    - name: Download media JSON (only for full sync)
       shell: bash
       run: |
         MODE="${{ github.event.inputs.mode || 'daily' }}"
@@ -54,11 +54,11 @@ jobs:
         
         if [ "$MODE" = "full" ] || [ "$EVENT_NAME" = "schedule" ]; then
           echo "Media JSON download placeholder"
-          # Example: curl -o dantotsu_unique_media.json https://your-url/media.json
+          # Example:
+          # curl -o dantotsu_unique_media.json https://your-url/media.json
         else
-          echo "Skipping media JSON download (Mode: $MODE, Event: $EVENT_NAME)"
+          echo "Skipping media JSON download (Mode: $MODE)"
         fi
-
     
     - name: Run sync script
       env:

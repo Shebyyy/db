@@ -1,0 +1,70 @@
+name: Dantotsu Comment Sync
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Sync Mode'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - full
+          - gaps
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests
+    
+    - name: Download media JSON (if needed)
+      run: |
+        # Only if running full sync
+        if [ "${{ github.event.inputs.mode }}" = "full" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          # Add logic to download your media JSON file
+          # Example: curl -o dantotsu_unique_media.json https://your-url/media.json
+          echo "Media JSON download placeholder"
+        fi
+    
+    - name: Run sync script
+      env:
+        APP_AUTH_KEY: ${{ secrets.APP_AUTH_KEY }}
+        DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+        ANILIST_TOKEN: ${{ secrets.ANILIST_TOKEN }}
+        SYNC_MODE: ${{ github.event.inputs.mode || 'daily' }}
+      run: |
+        python dantotsu_sync.py
+    
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add dantotsu_global_db.csv
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Update database: $(date +'%Y-%m-%d %H:%M:%S')" && git push)
+    
+    - name: Upload database as artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: database-backup
+        path: dantotsu_global_db.csv
+        retention-days: 30

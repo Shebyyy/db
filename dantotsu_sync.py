@@ -62,7 +62,7 @@ class DantotsuManager:
             'comment_id', 'user_id', 'media_id', 'parent_comment_id', 'content', 
             'timestamp', 'deleted', 'tag', 'upvotes', 'downvotes', 
             'user_vote_type', 'username', 'profile_picture_url', 
-            'is_mod', 'is_admin', 'reply_count', 'total_votes'
+            'is_mod', 'is_admin', 'reply_count', 'total_votes', 'changes'
         ]
 
     def get_dantotsu_auth(self):
@@ -82,7 +82,7 @@ class DantotsuManager:
         return False
 
     def format_row(self, c):
-        """Maps API response to the 17-column CSV format with clean content."""
+        """Maps API response to the CSV format with clean content."""
         return {
             'comment_id': c.get('comment_id'),
             'user_id': c.get('user_id'),
@@ -100,7 +100,8 @@ class DantotsuManager:
             'is_mod': c.get('is_mod'),
             'is_admin': c.get('is_admin'),
             'reply_count': int(c.get('reply_count', 0)),
-            'total_votes': int(c.get('total_votes', 0))
+            'total_votes': int(c.get('total_votes', 0)),
+            'changes': ''
         }
 
     def fetch_media_comments(self, m_id):
@@ -143,6 +144,7 @@ class DantotsuManager:
     def get_existing_data(self):
         captured_media = set()
         captured_comments = set()
+        existing_rows = {}
         if DB_PATH.exists():
             print(f"Scanning CSV at {DB_PATH}...")
             with open(DB_PATH, 'r', encoding='utf-8') as f:
@@ -154,8 +156,9 @@ class DantotsuManager:
                         captured_media.add(int(m_id))
                     if c_id and c_id.isdigit():
                         captured_comments.add(int(c_id))
+                        existing_rows[int(c_id)] = row
             print(f"✓ Scanned {len(captured_media)} media IDs and {len(captured_comments)} existing comments.")
-        return captured_media, captured_comments
+        return captured_media, captured_comments, existing_rows
 
     def process_media_list(self, target_ids, label="Scrape"):
         if not target_ids:
@@ -191,7 +194,7 @@ class DantotsuManager:
         print(f"\n✓ Completed. Total new comments: {session_comments}")
 
     def run_comment_id_gap_fill(self):
-        _, existing_comments = self.get_existing_data()
+        _, existing_comments, _ = self.get_existing_data()
         if not existing_comments:
             print("❌ No existing comments found in database.")
             return
@@ -263,25 +266,54 @@ class DantotsuManager:
             print("No active media found in last 24h.")
             return
             
-        _, existing_comments = self.get_existing_data()
+        captured_media, existing_comments, existing_rows = self.get_existing_data()
         new_found = 0
+        updated_found = 0
         print(f"Syncing {len(active_ids)} active media IDs...")
-        
-        mode = 'a' if DB_PATH.exists() else 'w'
-        with open(DB_PATH, mode, newline='', encoding='utf-8') as f:
+
+        # Load all rows in memory
+        all_rows = {}
+        if DB_PATH.exists():
+            with open(DB_PATH, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f, delimiter='\t')
+                for row in reader:
+                    all_rows[int(row['comment_id'])] = row
+
+        # Update or append
+        with open(DB_PATH, 'w', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=self.field_names, delimiter='\t', extrasaction='ignore')
-            if mode == 'w': writer.writeheader()
-            
+            writer.writeheader()
+
             for m_id in active_ids:
                 comments = self.fetch_media_comments(m_id)
                 for c in comments:
-                    if int(c['comment_id']) not in existing_comments:
-                        writer.writerow(self.format_row(c))
-                        existing_comments.add(int(c['comment_id']))
+                    cid = int(c['comment_id'])
+                    row = self.format_row(c)
+                    if cid in all_rows:
+                        # Compare fields to detect changes
+                        changes = []
+                        for key in self.field_names[:-1]:  # exclude 'changes' itself
+                            old = str(all_rows[cid].get(key, ''))
+                            new = str(row.get(key, ''))
+                            if old != new:
+                                changes.append(key)
+                        if changes:
+                            row['changes'] = ",".join(changes)
+                            all_rows[cid] = row
+                            updated_found += 1
+                        else:
+                            row['changes'] = ''
+                            all_rows[cid] = all_rows[cid]  # keep old row
+                    else:
+                        row['changes'] = "NEW"
+                        all_rows[cid] = row
                         new_found += 1
-                time.sleep(0.3)
-                f.flush()
-        print(f"✓ Daily Sync Complete. Added {new_found} new comments.")
+
+            # Write all rows back
+            for r in all_rows.values():
+                writer.writerow(r)
+
+        print(f"✓ Daily Sync Complete. Added {new_found} new comments, Updated {updated_found} comments.")
 
 def main():
     print(f"=== Dantotsu Sync Starting (Mode: {SYNC_MODE}) ===")
@@ -304,7 +336,7 @@ def main():
             return 1
         with open(MEDIA_JSON_PATH, 'r') as f:
             all_json_ids = [int(x) for x in json.load(f)]
-        captured_media, _ = manager.get_existing_data()
+        captured_media, _ , _ = manager.get_existing_data()
         targets = [x for x in all_json_ids if x not in captured_media]
         manager.process_media_list(targets, "Full Media Scrape")
     else:

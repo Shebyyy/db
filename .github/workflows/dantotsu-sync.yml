@@ -2,8 +2,7 @@ name: Dantotsu Comment Sync
 
 on:
   schedule:
-    # Run daily at 2 AM UTC
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *'  # Run daily at 2 AM UTC
   workflow_dispatch:
     inputs:
       mode:
@@ -15,6 +14,17 @@ on:
           - daily
           - full
           - gaps
+          - user-focused
+          - time-frame
+      user_ids:
+        description: 'Comma-separated user IDs (only for user-focused)'
+        required: false
+      sync_start:
+        description: 'Start datetime ISO (only for time-frame)'
+        required: false
+      sync_end:
+        description: 'End datetime ISO (only for time-frame)'
+        required: false
 
 jobs:
   sync:
@@ -38,12 +48,8 @@ jobs:
     
     - name: Download media JSON (if needed)
       run: |
-        # Only if running full sync
         if [ "${{ github.event.inputs.mode }}" = "full" ] || [ "${{ github.event_name }}" = "schedule" ]; then
-          # Add logic to download your media JSON file
-          # Example: curl -o dantotsu_unique_media.json https://your-url/media.json
           echo "Media JSON download placeholder"
-        fi
     
     - name: Run sync script
       env:
@@ -51,6 +57,9 @@ jobs:
         DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         ANILIST_TOKEN: ${{ secrets.ANILIST_TOKEN }}
         SYNC_MODE: ${{ github.event.inputs.mode || 'daily' }}
+        SYNC_USER_IDS: ${{ github.event.inputs.user_ids || '' }}
+        SYNC_START: ${{ github.event.inputs.sync_start || '' }}
+        SYNC_END: ${{ github.event.inputs.sync_end || '' }}
       run: |
         python dantotsu_sync.py
     

@@ -83,27 +83,24 @@ class DantotsuManager:
 
     def format_row(self, c):
         """Maps API response to the 17-column CSV format with clean content."""
-        user = c.get('user', {})
-        up = int(c.get('upvotes', 0))
-        down = int(c.get('downvotes', 0))
         return {
             'comment_id': c.get('comment_id'),
             'user_id': c.get('user_id'),
             'media_id': c.get('media_id'),
             'parent_comment_id': c.get('parent_comment_id', 'NULL'),
-            'content': str(c.get('content', '')).replace('\t', ' ').replace('\n', ' '), 
+            'content': str(c.get('content', '')).replace('\t', ' ').replace('\n', ' '),
             'timestamp': c.get('timestamp'),
-            'deleted': c.get('deleted', 0),
-            'tag': c.get('tag', 'NULL'),
-            'upvotes': up,
-            'downvotes': down,
-            'user_vote_type': c.get('user_vote_type', 0),
-            'username': user.get('username', 'NULL'),
-            'profile_picture_url': user.get('profile_picture_url', 'NULL'),
-            'is_mod': user.get('is_mod', 0),
-            'is_admin': user.get('is_admin', 0),
-            'reply_count': c.get('reply_count', 0),
-            'total_votes': up - down
+            'deleted': c.get('deleted'),
+            'tag': c.get('tag'),
+            'upvotes': int(c.get('upvotes', 0)),
+            'downvotes': int(c.get('downvotes', 0)),
+            'user_vote_type': c.get('user_vote_type'),
+            'username': c.get('username', 'NULL'),
+            'profile_picture_url': c.get('profile_picture_url', 'NULL'),
+            'is_mod': c.get('is_mod'),
+            'is_admin': c.get('is_admin'),
+            'reply_count': int(c.get('reply_count', 0)),
+            'total_votes': int(c.get('total_votes', 0))
         }
 
     def fetch_media_comments(self, m_id):
@@ -144,7 +141,6 @@ class DantotsuManager:
         return None
 
     def get_existing_data(self):
-        """Robust scanner to identify media and comment IDs already in CSV."""
         captured_media = set()
         captured_comments = set()
         if DB_PATH.exists():
@@ -195,7 +191,6 @@ class DantotsuManager:
         print(f"\n✓ Completed. Total new comments: {session_comments}")
 
     def run_comment_id_gap_fill(self):
-        """Non-interactive gap filling for automated runs"""
         _, existing_comments = self.get_existing_data()
         if not existing_comments:
             print("❌ No existing comments found in database.")

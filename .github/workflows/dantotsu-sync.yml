@@ -59,7 +59,15 @@ jobs:
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add dantotsu_global_db.csv
-        git diff --quiet && git diff --staged --quiet || (git commit -m "Update database: $(date +'%Y-%m-%d %H:%M:%S')" && git push)
+        # Only commit if there are changes
+        if ! git diff --quiet && ! git diff --staged --quiet; then
+          git commit -m "Update database: $(date +'%Y-%m-%d %H:%M:%S')"
+          # Pull remote changes first to avoid rejection
+          git pull --rebase origin main
+          git push origin main
+        else
+          echo "No changes to commit."
+        fi
     
     - name: Upload database as artifact
       uses: actions/upload-artifact@v4

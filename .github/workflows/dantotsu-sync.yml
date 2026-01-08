@@ -78,7 +78,7 @@ jobs:
         git config --local user.name "github-actions[bot]"
         git add -A
         git commit -m "Update database: $(date +'%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
-        git push origin main --force
+        git push origin main
     
     - name: Upload database as artifact
       uses: actions/upload-artifact@v4

@@ -16,11 +16,6 @@ FEED_CHANNEL_ID = "1180378569109671987"
 ANILIST_TOKEN = os.getenv("ANILIST_TOKEN", "")
 SYNC_MODE = os.getenv("SYNC_MODE", "daily")
 
-# --- NEW ENV VARS FOR MODES ---
-SYNC_USER_IDS = os.getenv("SYNC_USER_IDS", "")  # user-focused
-SYNC_START = os.getenv("SYNC_START")           # time-frame
-SYNC_END = os.getenv("SYNC_END")               # time-frame
-
 # Use relative path for GitHub Actions
 DB_PATH = Path("dantotsu_global_db.csv")
 MEDIA_JSON_PATH = Path("dantotsu_unique_media.json")
@@ -145,31 +140,6 @@ class DantotsuManager:
                 return r.json()
         except: pass
         return None
-
-    # --- NEW METHOD: Fetch comments by user ---
-    def fetch_user_comments(self, user_id):
-        user_comments = []
-        page = 1
-        headers = {"appauth": APP_AUTH_KEY, "Authorization": self.dantotsu_token}
-        while True:
-            url = f"{API_ADDRESS}/users/{user_id}/comments/{page}?sort=newest"
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                if r.status_code == 404: break
-                if r.status_code == 429:
-                    time.sleep(30)
-                    continue
-                if r.status_code != 200: break
-                data = r.json()
-                comments = data.get("comments", [])
-                if not comments: break
-                user_comments.extend(comments)
-                page += 1
-                time.sleep(0.1)
-            except Exception as e:
-                print(f"Error fetching comments for user {user_id}: {e}")
-                break
-        return user_comments
 
     def get_existing_data(self):
         captured_media = set()
@@ -345,41 +315,6 @@ class DantotsuManager:
 
         print(f"✓ Daily Sync Complete. Added {new_found} new comments, Updated {updated_found} comments.")
 
-    # --- NEW MODE: User-focused ---
-    def run_user_focused_sync(self):
-        if not SYNC_USER_IDS:
-            print("❌ No user IDs provided for user-focused mode.")
-            return
-        user_ids = [int(x.strip()) for x in SYNC_USER_IDS.split(",")]
-        for uid in user_ids:
-            comments = self.fetch_user_comments(uid)
-            if not comments: continue
-            path = Path(f"user_{uid}.csv")
-            with open(path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=self.field_names, delimiter='\t', extrasaction='ignore')
-                writer.writeheader()
-                for c in comments:
-                    writer.writerow(self.format_row(c))
-
-    # --- NEW MODE: Time-frame ---
-    def run_time_frame_sync(self):
-        if not SYNC_START or not SYNC_END:
-            print("❌ SYNC_START or SYNC_END not provided for time-frame mode.")
-            return
-        start = datetime.fromisoformat(SYNC_START)
-        end = datetime.fromisoformat(SYNC_END)
-        captured_media, _, _ = self.get_existing_data()
-        media_ids = list(captured_media)
-        with open(DB_PATH, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=self.field_names, delimiter='\t', extrasaction='ignore')
-            if DB_PATH.stat().st_size == 0: writer.writeheader()
-            for m_id in media_ids:
-                comments = self.fetch_media_comments(m_id)
-                for c in comments:
-                    ts = datetime.fromisoformat(c['timestamp'])
-                    if start <= ts <= end:
-                        writer.writerow(self.format_row(c))
-
 def main():
     print(f"=== Dantotsu Sync Starting (Mode: {SYNC_MODE}) ===")
     
@@ -404,10 +339,6 @@ def main():
         captured_media, _ , _ = manager.get_existing_data()
         targets = [x for x in all_json_ids if x not in captured_media]
         manager.process_media_list(targets, "Full Media Scrape")
-    elif SYNC_MODE == "user-focused":       # NEW
-        manager.run_user_focused_sync()
-    elif SYNC_MODE == "time-frame":         # NEW
-        manager.run_time_frame_sync()
     else:
         print(f"❌ Unknown mode: {SYNC_MODE}")
         return 1

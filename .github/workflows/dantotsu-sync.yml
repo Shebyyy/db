@@ -14,17 +14,6 @@ on:
           - daily
           - full
           - gaps
-          - user-focused
-          - time-frame
-      user_ids:
-        description: 'Comma-separated user IDs (only for user-focused)'
-        required: false
-      sync_start:
-        description: 'Start datetime ISO (only for time-frame)'
-        required: false
-      sync_end:
-        description: 'End datetime ISO (only for time-frame)'
-        required: false
 
 jobs:
   sync:
@@ -63,14 +52,10 @@ jobs:
     - name: Run sync script
       env:
         APP_AUTH_KEY: ${{ secrets.APP_AUTH_KEY }}
-        DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         ANILIST_TOKEN: ${{ secrets.ANILIST_TOKEN }}
         SYNC_MODE: ${{ github.event.inputs.mode || 'daily' }}
-        SYNC_USER_IDS: ${{ github.event.inputs.user_ids || '' }}
-        SYNC_START: ${{ github.event.inputs.sync_start || '' }}
-        SYNC_END: ${{ github.event.inputs.sync_end || '' }}
       run: |
-        python dantotsu_sync.py
+        python dantotsu_sync_new.py
     
     - name: Commit and push changes
       run: |

@@ -27,8 +27,9 @@ ANILIST_CLIENT_SECRET = "FmA0Bi0ahaxY0x2IW0CVtXTer5wREKBp8fDA0ZIz"
 DB_PATH = Path("dantotsu_global_db.csv")
 
 class AniListAuthenticator:
-    def __init__(self, client_id):
+    def __init__(self, client_id, client_secret): 
         self.client_id = client_id
+        self.client_secret = client_secret 
         self.access_token = ANILIST_TOKEN
         self.token_file = Path("anilist_token.json")
     

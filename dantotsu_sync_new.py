@@ -1,22 +1,30 @@
 import requests
 import json
 import csv
+import webbrowser
 import time
 import os
 import re
+import random
+import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- CONFIGURATION FROM ENVIRONMENT ---
+# --- CONFIGURATION ---
 APP_AUTH_KEY = os.getenv("APP_AUTH_KEY", "")
 API_ADDRESS = "https://api.dantotsu.app"
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 ANILIST_TOKEN = os.getenv("ANILIST_TOKEN", "")
-SYNC_MODE = os.getenv("SYNC_MODE", "daily")
 
-# Use relative path for GitHub Actions
+FEED_CHANNEL_ID = "1180378569109671987"
+MOD_BOT_ID = "1212248844398493717"
+DELETE_CMD_ID = "1212448947499700316"
+
+ANILIST_CLIENT_ID = "33909"
+ANILIST_CLIENT_SECRET = "FmA0Bi0ahaxY0x2IW0CVtXTer5wREKBp8fDA0ZIz"
+
 DB_PATH = Path("dantotsu_global_db.csv")
-MEDIA_JSON_PATH = Path("dantotsu_unique_media.json")
 
 class AniListAuthenticator:
     def __init__(self, client_id):
@@ -55,32 +63,54 @@ class AniListAuthenticator:
 class DantotsuManager:
     def __init__(self, al_authenticator):
         self.auth = al_authenticator
-        self.dantotsu_token = None
+        self.d_token = None
         self.field_names = [
             'comment_id', 'user_id', 'media_id', 'parent_comment_id', 'content', 
             'timestamp', 'deleted', 'tag', 'upvotes', 'downvotes', 
             'user_vote_type', 'username', 'profile_picture_url', 
-            'is_mod', 'is_admin', 'reply_count', 'total_votes', 'changes'
+            'is_mod', 'is_admin', 'reply_count', 'total_votes'
         ]
 
     def get_dantotsu_auth(self):
-        print("Authenticating with Dantotsu Comment API...")
+        print("Authenticating with Dantotsu (Unlocking NSFW/Mod data)...")
         headers = {"appauth": APP_AUTH_KEY}
         try:
-            r = requests.post(f"{API_ADDRESS}/authenticate", headers=headers, 
-                             data={"token": self.auth.access_token}, timeout=15)
+            r = requests.post(f"{API_ADDRESS}/authenticate", headers=headers, data={"token": self.auth.access_token})
             if r.status_code == 200:
-                self.dantotsu_token = r.json().get("authToken")
-                print(f"✓ Connected as Mod: {r.json()['user']['username']}")
+                self.d_token = r.json().get("authToken")
+                print(f"✓ Connected as: {r.json()['user']['username']}")
                 return True
-            else:
-                print(f"❌ Auth failed: {r.status_code}")
         except Exception as e:
             print(f"Connection Error: {e}")
         return False
 
+    def fetch_user_data(self, user_id):
+        """Fetch detailed user data if available"""
+        headers = {"appauth": APP_AUTH_KEY, "Authorization": self.d_token}
+        try:
+            r = requests.get(f"{API_ADDRESS}/users/{user_id}", headers=headers, timeout=10)
+            if r.status_code == 200:
+                return r.json()
+            elif r.status_code == 429:
+                time.sleep(30)
+                return self.fetch_user_data(user_id)
+        except:
+            pass
+        return None
+
     def format_row(self, c):
-        """Maps API response to the CSV format with clean content."""
+        u = c.get('user') if c.get('user') is not None else {}
+        
+        # Check if any important user data is missing
+        important_fields = ['username', 'profile_picture_url', 'is_mod', 'is_admin']
+        missing_data = any(not u.get(field) for field in important_fields)
+        
+        # Try to get user details if any important data is missing
+        if missing_data and u.get('id'):
+            user_data = self.fetch_user_data(u['id'])
+            if user_data:
+                u = user_data  # Override with full user data
+        
         return {
             'comment_id': c.get('comment_id'),
             'user_id': c.get('user_id'),
@@ -88,258 +118,186 @@ class DantotsuManager:
             'parent_comment_id': c.get('parent_comment_id', 'NULL'),
             'content': str(c.get('content', '')).replace('\t', ' ').replace('\n', ' '),
             'timestamp': c.get('timestamp'),
-            'deleted': c.get('deleted'),
-            'tag': c.get('tag'),
+            'deleted': 1 if c.get('deleted') is True else 0,
+            'tag': c.get('tag', 'NULL'),
             'upvotes': int(c.get('upvotes', 0)),
             'downvotes': int(c.get('downvotes', 0)),
-            'user_vote_type': c.get('user_vote_type'),
-            'username': c.get('username', 'NULL'),
-            'profile_picture_url': c.get('profile_picture_url', 'NULL'),
-            'is_mod': c.get('is_mod'),
-            'is_admin': c.get('is_admin'),
+            'user_vote_type': c.get('user_vote_type', 0),
+            'username': u.get('username', 'NULL'),
+            'profile_picture_url': u.get('profile_picture_url', 'NULL'),
+            'is_mod': 1 if u.get('is_mod') is True else 0,
+            'is_admin': 1 if u.get('is_admin') is True else 0,
             'reply_count': int(c.get('reply_count', 0)),
-            'total_votes': int(c.get('total_votes', 0)),
-            'changes': ''
+            'total_votes': int(c.get('total_votes', 0))
         }
 
     def fetch_media_comments(self, m_id):
-        media_comments = []
+        """Sequential Deep Scraper: Fetches every page for one media ID before moving on."""
+        all_comments = []
         page = 1
-        headers = {"appauth": APP_AUTH_KEY, "Authorization": self.dantotsu_token}
+        headers = {"appauth": APP_AUTH_KEY, "Authorization": self.d_token}
+        
         while True:
             url = f"{API_ADDRESS}/comments/{m_id}/{page}?sort=newest"
             try:
-                r = requests.get(url, headers=headers, timeout=10)
-                if r.status_code == 404: break
+                r = requests.get(url, headers=headers, timeout=15)
+                
                 if r.status_code == 429:
+                    print(f"\n⚠️ [Rate Limit] Waiting 30s for Media {m_id} (Page {page})...")
                     time.sleep(30)
-                    continue
-                if r.status_code != 200: break
-                data = r.json()
-                comments = data.get("comments", [])
-                if not comments: break
-                media_comments.extend(comments)
+                    continue # Retry the same page
+                
+                if r.status_code != 200:
+                    break # Break on 404 or other errors
+                    
+                data = r.json().get("comments", [])
+                if not data:
+                    break # End of comment thread
+                    
+                all_comments.extend(data)
                 page += 1
-                time.sleep(0.1)
+                time.sleep(0.2) # Very slight delay to keep steady pace
             except Exception as e:
-                print(f"Error fetching media {m_id}: {e}")
+                print(f"\nError fetching media {m_id}: {e}")
                 break
-        return media_comments
+        return all_comments
 
-    def fetch_single_comment(self, comment_id):
-        headers = {"appauth": APP_AUTH_KEY, "Authorization": self.dantotsu_token}
-        url = f"{API_ADDRESS}/comments/{comment_id}"
+    def fetch_single_comment(self, cid):
+        headers = {"appauth": APP_AUTH_KEY, "Authorization": self.d_token}
         try:
-            r = requests.get(url, headers=headers, timeout=10)
+            r = requests.get(f"{API_ADDRESS}/comments/{cid}", headers=headers, timeout=10)
             if r.status_code == 429:
                 time.sleep(30)
-                return self.fetch_single_comment(comment_id)
-            if r.status_code == 200:
-                return r.json()
-        except: pass
-        return None
+                return self.fetch_single_comment(cid)
+            return r.json() if r.status_code == 200 else None
+        except: return None
 
     def get_existing_data(self):
-        captured_media = set()
-        captured_comments = set()
-        existing_rows = {}
+        captured_media, captured_comments = set(), set()
         if DB_PATH.exists():
             print(f"Scanning CSV at {DB_PATH}...")
-            with open(DB_PATH, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f, delimiter='\t')
-                for row in reader:
-                    m_id = row.get('media_id')
-                    c_id = row.get('comment_id')
-                    if m_id and m_id.isdigit() and row.get('content') != 'EMPTY_MARKER':
-                        captured_media.add(int(m_id))
-                    if c_id and c_id.isdigit():
-                        captured_comments.add(int(c_id))
-                        existing_rows[int(c_id)] = row
-            print(f"✓ Scanned {len(captured_media)} media IDs and {len(captured_comments)} existing comments.")
-        return captured_media, captured_comments, existing_rows
+            try:
+                df = pd.read_csv(DB_PATH, sep='\t', usecols=['media_id', 'comment_id', 'content'])
+                df = df[df['content'] != 'EMPTY_MARKER']
+                captured_media = set(df['media_id'].dropna().astype(int))
+                captured_comments = set(df['comment_id'].dropna().astype(int))
+                print(f"✓ Scanned {len(captured_comments)} existing comments.")
+            except Exception as e:
+                print(f"Scan error: {e}")
+        return captured_media, captured_comments
 
     def process_media_list(self, target_ids, label="Scrape"):
         if not target_ids:
-            print("✓ All IDs are already in the database.")
+            print("✓ Database is up to date.")
             return
-        print(f"Starting {label}: {len(target_ids)} media to check.")
+            
+        print(f"Starting {label}: {len(target_ids)} media (Sequential processing).")
         start_time = time.time()
         session_comments = 0
-        
         mode = 'a' if DB_PATH.exists() else 'w'
+        
         with open(DB_PATH, mode, newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=self.field_names, delimiter='\t', extrasaction='ignore')
             if mode == 'w': writer.writeheader()
-
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {executor.submit(self.fetch_media_comments, m_id): m_id for m_id in target_ids}
-                done = 0
-                for future in as_completed(futures):
-                    m_id = futures[future]
-                    res = future.result()
-                    done += 1
-                    elapsed = time.time() - start_time
-                    m, s = divmod(int(elapsed), 60)
-                    
-                    if res:
-                        writer.writerows([self.format_row(c) for c in res])
-                        session_comments += len(res)
-                        print(f"[{done}/{len(target_ids)}] ✓ Media {m_id} | +{len(res)} (Session Total: {session_comments}) | {m}m {s}s")
-                    else:
-                        writer.writerow({'media_id': m_id, 'content': 'EMPTY_MARKER'})
-                        print(f"[{done}/{len(target_ids)}] ◌ Media {m_id} empty | Session: {session_comments} | {m}m {s}s")
-                    f.flush()
-        print(f"\n✓ Completed. Total new comments: {session_comments}")
+            
+            for idx, m_id in enumerate(target_ids, 1):
+                # Fetch all pages for this specific media ID
+                comments = self.fetch_media_comments(m_id)
+                
+                elapsed = time.time() - start_time
+                mins, secs = divmod(int(elapsed), 60)
+                
+                if comments:
+                    writer.writerows([self.format_row(c) for c in comments])
+                    session_comments += len(comments)
+                    print(f"[{idx}/{len(target_ids)}] ✓ Media {m_id: <6} | +{len(comments): <4} | Total Session: {session_comments: <6} | {mins}m {secs}s")
+                else:
+                    writer.writerow({'media_id': m_id, 'content': 'EMPTY_MARKER'})
+                    print(f"[{idx}/{len(target_ids)}] ◌ Media {m_id: <6} empty | {mins}m {secs}s")
+                
+                f.flush() # Force save to disk after every media is finished
 
     def run_comment_id_gap_fill(self):
-        _, existing_comments, _ = self.get_existing_data()
-        if not existing_comments:
-            print("❌ No existing comments found in database.")
-            return
+        _, existing = self.get_existing_data()
+        auto_max = max(existing) if existing else 0
+        target = input(f"Check up to ID (Default {auto_max}): ").strip()
+        last_id = int(target) if target.isdigit() else auto_max
+        missing = sorted(list(set(range(1, last_id + 1)) - existing))
         
-        last_id = max(existing_comments)
-        print(f"Detected highest comment ID in CSV: {last_id}")
+        if not missing: return print("✓ No gaps found.")
+        print(f"Fetching {len(missing)} IDs sequentially...")
         
-        all_ids_in_range = set(range(1, last_id + 1))
-        missing_ids = sorted(list(all_ids_in_range - existing_comments))
-        
-        print(f"Missing IDs to check: {len(missing_ids)}")
-        if not missing_ids:
-            print("✓ Database sequence is complete.")
-            return
-
-        print(f"Starting individual fetch for {len(missing_ids)} IDs...")
-        start_time = time.time()
-        found = 0
         with open(DB_PATH, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=self.field_names, delimiter='\t', extrasaction='ignore')
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(self.fetch_single_comment, cid): cid for cid in missing_ids}
-                done = 0
-                for future in as_completed(futures):
-                    res = future.result()
-                    done += 1
-                    if res:
-                        writer.writerow(self.format_row(res))
-                        found += 1
-                        f.flush()
-                    if done % 20 == 0 or done == len(missing_ids):
-                        elapsed = time.time() - start_time
-                        m, s = divmod(int(elapsed), 60)
-                        print(f"Checked: {done}/{len(missing_ids)} | Found: {found} | {m}m {s}s")
-        print(f"\n✓ Gap fill complete. Added {found} comments.")
+            for idx, cid in enumerate(missing, 1):
+                res = self.fetch_single_comment(cid)
+                if res:
+                    writer.writerow(self.format_row(res))
+                    f.flush()
+                if idx % 10 == 0:
+                    print(f"Progress: {idx}/{len(missing)} IDs checked", end='\r')
+        print("\n✓ Gap fill complete.")
 
-    def run_daily_sync(self):
-        print("Starting daily sync using only Dantotsu API...")
-        captured_media, _, existing_rows = self.get_existing_data()
-        new_found = 0
-        updated_found = 0
+    def run_smart_sync(self):
+        print("🚀 Starting Smart Sync...")
+        headers = {"Authorization": DISCORD_TOKEN}
+        r = requests.get(f"https://discord.com/api/v9/channels/{FEED_CHANNEL_ID}/messages?limit=100", headers=headers)
+        deleted_ids, active_media = [], set()
         
-        # Get all media IDs from the database
-        media_ids = list(captured_media)
-        print(f"Checking {len(media_ids)} media IDs for updates...")
+        if r.status_code == 200:
+            for m in r.json():
+                content = m.get('content', '')
+                mid_match = re.search(r'\* Media: (\d+)', content)
+                if mid_match: active_media.add(int(mid_match.group(1)))
+                if MOD_BOT_ID in str(m.get('author', {}).get('id')) or DELETE_CMD_ID in content:
+                    cid_match = re.search(r'comment_id[:\s]+(\d+)', content)
+                    if cid_match: deleted_ids.append(int(cid_match.group(1)))
 
-        # Load all rows in memory
-        all_rows = {}
         if DB_PATH.exists():
-            with open(DB_PATH, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f, delimiter='\t')
-                for row in reader:
-                    all_rows[int(row['comment_id'])] = row
+            df = pd.read_csv(DB_PATH, sep='\t')
+            if deleted_ids:
+                df.loc[df['comment_id'].isin(deleted_ids), 'deleted'] = 1
+                print(f"🔨 Flagged {len(deleted_ids)} Mod deletions.")
+            
+            # Use the sequential fetch for active media too
+            new_rows = []
+            for mid in active_media:
+                print(f"Refreshing Media {mid}...")
+                results = self.fetch_media_comments(mid)
+                new_rows.extend([self.format_row(c) for c in results])
+            
+            if new_rows:
+                df = pd.concat([df, pd.DataFrame(new_rows)]).drop_duplicates(subset=['comment_id'], keep='last')
+            
+            df.sort_values('comment_id').to_csv(DB_PATH, sep='\t', index=False)
+            print("✨ Smart Sync Complete.")
 
-        # Update or append
-        with open(DB_PATH, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=self.field_names, delimiter='\t', extrasaction='ignore')
-            writer.writeheader()
-
-            # Process in batches to avoid overwhelming the API
-            batch_size = 50
-            for i in range(0, len(media_ids), batch_size):
-                batch = media_ids[i:i+batch_size]
-                print(f"Processing batch {i//batch_size + 1}/{(len(media_ids)-1)//batch_size + 1}...")
-                
-                with ThreadPoolExecutor(max_workers=3) as executor:
-                    futures = {executor.submit(self.fetch_media_comments, m_id): m_id for m_id in batch}
-                    for future in as_completed(futures):
-                        m_id = futures[future]
-                        comments = future.result()
-                        
-                        if not comments:
-                            continue
-                            
-                        for c in comments:
-                            cid = int(c['comment_id'])
-                            row = self.format_row(c)
-                            
-                            if cid in all_rows:
-                                # Compare fields to detect changes
-                                old_row = all_rows[cid]
-                                has_changes = False
-                                
-                                # Check if content changed (edited comment)
-                                if old_row.get('content', '') != row.get('content', ''):
-                                    # Store the previous content in the changes field
-                                    row['changes'] = old_row.get('content', '')
-                                    has_changes = True
-                                
-                                # Check other fields for changes
-                                for key in self.field_names:
-                                    if key in ['comment_id', 'content', 'changes']:
-                                        continue  # Already handled or skip
-                                    old = str(old_row.get(key, ''))
-                                    new = str(row.get(key, ''))
-                                    if old != new:
-                                        has_changes = True
-                                        break
-                                
-                                if has_changes:
-                                    all_rows[cid] = row
-                                    updated_found += 1
-                                else:
-                                    # No changes, keep the original row
-                                    all_rows[cid] = old_row
-                            else:
-                                # New comment
-                                row['changes'] = "NEW"
-                                all_rows[cid] = row
-                                new_found += 1
-
-            # Write all rows back
-            for r in all_rows.values():
-                writer.writerow(r)
-
-        print(f"✓ Daily Sync Complete. Added {new_found} new comments, Updated {updated_found} comments.")
-
-def main():
-    print(f"=== Dantotsu Sync Starting (Mode: {SYNC_MODE}) ===")
-    
-    al_auth = AniListAuthenticator("14959")
-    if not al_auth.authenticate():
-        return 1
-    
-    manager = DantotsuManager(al_auth)
-    if not manager.get_dantotsu_auth():
-        return 1
-    
-    if SYNC_MODE == "daily":
-        manager.run_daily_sync()
-    elif SYNC_MODE == "gaps":
-        manager.run_comment_id_gap_fill()
-    elif SYNC_MODE == "full":
-        if not MEDIA_JSON_PATH.exists():
-            print(f"❌ Error: Media JSON not found at {MEDIA_JSON_PATH}")
-            return 1
-        with open(MEDIA_JSON_PATH, 'r') as f:
-            all_json_ids = [int(x) for x in json.load(f)]
-        captured_media, _ , _ = manager.get_existing_data()
-        targets = [x for x in all_json_ids if x not in captured_media]
-        manager.process_media_list(targets, "Full Media Scrape")
-    else:
-        print(f"❌ Unknown mode: {SYNC_MODE}")
-        return 1
-    
-    print("=== Sync Complete ===")
-    return 0
+    def cleanup_repair(self):
+        if not DB_PATH.exists(): return
+        print("🧼 Cleaning and Repairing Database Headers...")
+        df = pd.read_csv(DB_PATH, sep='\t')
+        df = df[df['content'] != 'EMPTY_MARKER']
+        for col in self.field_names:
+            if col not in df.columns: df[col] = 'NULL'
+        df = df[self.field_names].drop_duplicates(subset=['comment_id']).sort_values('comment_id')
+        df.to_csv(DB_PATH, sep='\t', index=False)
+        print(f"✅ Cleanup Done. Total unique comments: {len(df)}")
 
 if __name__ == "__main__":
-    exit(main())
+    al = AniListAuthenticator(ANILIST_CLIENT_ID, ANILIST_CLIENT_SECRET)
+    if al.authenticate():
+        mgr = DantotsuManager(al)
+        if mgr.get_dantotsu_auth():
+            print("\n1. History Scrape (Full)\n2. Smart Daily Sync (Activity + Deletes)\n3. Re-scan Missed Media\n4. Fill Sequence Gaps\n5. Header Repair & Cleanup")
+            choice = input("\nChoice: ")
+            
+            if choice in ["1", "3"]:
+                json_path = r"C:\Downloads\dantotsu_unique_media_1767774645019.json"
+                if os.path.exists(json_path):
+                    with open(json_path, 'r') as f: all_ids = [int(x) for x in json.load(f)]
+                    cap_media, _ = mgr.get_existing_data()
+                    targets = [x for x in all_ids if x not in cap_media]
+                    mgr.process_media_list(targets, "History")
+            elif choice == "2": mgr.run_smart_sync()
+            elif choice == "4": mgr.run_comment_id_gap_fill()
+            elif choice == "5": mgr.cleanup_repair()

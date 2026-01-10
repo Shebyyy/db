@@ -27,9 +27,9 @@ ANILIST_CLIENT_SECRET = "FmA0Bi0ahaxY0x2IW0CVtXTer5wREKBp8fDA0ZIz"
 DB_PATH = Path("dantotsu_global_db.csv")
 
 class AniListAuthenticator:
-    def __init__(self, client_id, client_secret): 
+    def __init__(self, client_id, client_secret):
         self.client_id = client_id
-        self.client_secret = client_secret 
+        self.client_secret = client_secret
         self.access_token = ANILIST_TOKEN
         self.token_file = Path("anilist_token.json")
     
@@ -289,16 +289,23 @@ if __name__ == "__main__":
     if al.authenticate():
         mgr = DantotsuManager(al)
         if mgr.get_dantotsu_auth():
-            print("\n1. History Scrape (Full)\n2. Smart Daily Sync (Activity + Deletes)\n3. Re-scan Missed Media\n4. Fill Sequence Gaps\n5. Header Repair & Cleanup")
-            choice = input("\nChoice: ")
+            # Get mode from environment variable instead of user input
+            mode = os.getenv('SYNC_MODE', 'daily').lower()
+            print(f"\nRunning in {mode} mode")
             
-            if choice in ["1", "3"]:
+            if mode == 'full':
+                print("1. History Scrape (Full)")
                 json_path = r"C:\Downloads\dantotsu_unique_media_1767774645019.json"
                 if os.path.exists(json_path):
                     with open(json_path, 'r') as f: all_ids = [int(x) for x in json.load(f)]
                     cap_media, _ = mgr.get_existing_data()
                     targets = [x for x in all_ids if x not in cap_media]
                     mgr.process_media_list(targets, "History")
-            elif choice == "2": mgr.run_smart_sync()
-            elif choice == "4": mgr.run_comment_id_gap_fill()
-            elif choice == "5": mgr.cleanup_repair()
+            elif mode == 'daily':
+                print("2. Smart Daily Sync (Activity + Deletes)")
+                mgr.run_smart_sync()
+            elif mode == 'gaps':
+                print("4. Fill Sequence Gaps")
+                mgr.run_comment_id_gap_fill()
+            else:
+                print(f"Unknown mode: {mode}")

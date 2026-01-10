@@ -1,0 +1,74 @@
+name: Dantotsu Comment Sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Run daily at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Sync Mode'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - daily
+          - full
+          - gaps
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pandas  # Added pandas here
+    
+    - name: Download media JSON (only for full sync)
+      shell: bash
+      run: |
+        MODE="${{ github.event.inputs.mode || 'daily' }}"
+        EVENT_NAME="${{ github.event_name }}"
+        
+        if [ "$MODE" = "full" ] || [ "$EVENT_NAME" = "schedule" ]; then
+          echo "Media JSON download placeholder"
+          # Example:
+          # curl -o dantotsu_unique_media.json https://your-url/media.json
+        else
+          echo "Skipping media JSON download (Mode: $MODE)"
+        fi
+    
+    - name: Run sync script
+      env:
+        APP_AUTH_KEY: ${{ secrets.APP_AUTH_KEY }}
+        ANILIST_TOKEN: ${{ secrets.ANILIST_TOKEN }}
+        SYNC_MODE: ${{ github.event.inputs.mode || 'daily' }}
+      run: |
+        python dantotsu_sync_new.py
+    
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add -A
+        git commit -m "Update database: $(date +'%Y-%m-%d %H:%M:%S')" || echo "Nothing to commit"
+        git push origin main
+    
+    - name: Upload database as artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: database-backup
+        path: dantotsu_global_db.csv
+        retention-days: 30
